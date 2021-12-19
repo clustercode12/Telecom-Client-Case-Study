@@ -1,0 +1,802 @@
+---
+title: "Telecom Client Case Study"
+author: "Cluster Code"
+date: "10/19/2021"
+output: html_document
+---
+
+# Telecom Client Case Study - Cluster Code
+## Unsupervised Learning
+
+## Introduction
+
+In this project we will try to understand a data set of customers on a company based on unsupervised learning tools. Because of the huge amount of data we have, first we will do some Data Cleaning and some Feature Analysis; then some PCA and with it we will summarize the data. And finally Factor Analysis and clustering to get results on what this clients are and if we can group them based on their characteristics.
+
+Our main goal is to see if the churn variable (variable that characterizes the customers if they leave the telecom company or not) has any relationship with our analysis, and if we can classify the customers without using the churn variable and they correlate.
+
+## Get the data
+
+```{r include=FALSE, results='hide'}
+# Setup the environment and load all the libraries
+
+workingDirectory = "/home/me/MEGA/Uni/2 YEAR/Q1/Stat. Learning/HW/1"
+setwd(workingDirectory)
+
+loadLibraries = function(libraries) {
+    for(lib in libraries) {
+        eval(parse(text = sprintf("library(%s)", lib)))
+        #install.packages(lib)
+        #trycatch
+    }
+}
+
+# All libraries that we are going to use.
+libraries = c("tidyverse", "leaflet", "rgdal", "stringr", "htmltab", "ggplot2", "GGally", "factoextra", "magrittr", "dplyr", "cluster", "mclust", "kernlab")
+loadLibraries(libraries)
+
+rm(list = ls())
+```
+
+First we load the data. The data set was downloaded from a Kaggle post based on a telecom company. The purpose of this data set was to predict the "churn" variable, but we will try to understand the clients into groups and see if they correspond to this variable.
+
+```{r echo=TRUE, warning=FALSE}
+customers.df = read.csv("dataset.csv", stringsAsFactors = TRUE)
+
+glimpse(customers.df)
+```
+
+At first sight, we can see a lot of factor variables and a ton of NA.
+
+## Data Cleaning
+
+First, we will take care of the missing values.
+
+```{r}
+hist(rowMeans(is.na(customers.df)), xlab = c("Missing values average by rows"), main = c())
+```
+
+We can see there are a some rows that have a lot of empty values on it. That is, there are some customers that do not have much information.
+
+Then we will look at the missing values by columns.
+
+```{r}
+indexesEmptyCols = which(colMeans(is.na(customers.df)) != 0)
+colsWithNA = sort(colMeans(is.na(customers.df[, indexesEmptyCols])), decreasing = TRUE)
+barplot(colsWithNA, las=2)
+```
+
+Here we can clearly see that for the 100 columns that we have, there are five columns that contribute for the most missing values. So we will first remove those columns.
+
+```{r}
+indexesColsToRemove = c()
+for (i in names(colsWithNA)[1:5]) {
+    indexesColsToRemove = c(indexesColsToRemove, which(names(customers.df) == i))
+}
+
+customers.df = customers.df[, -indexesColsToRemove]
+```
+
+Now that the columns are almost cleaned we will look at all the rows that have missing values.
+
+```{r}
+indexesEmptyRows = which(rowMeans(is.na(customers.df))!= 0)
+print(length(indexesEmptyRows))
+```
+
+There are 6000 rows that have some missing values. As it is too small compared to the total number of rows we will remove them.
+
+```{r}
+customers.df = customers.df[-indexesEmptyRows,]
+```
+
+Now, with columns and rows almost cleaned, we are going to look at individual values and see which ones are empty. To do that, first we have to remove the empty levels on the factors.
+
+```{r}
+print(length(which(is.na(customers.df) == TRUE)))
+
+rm(list = setdiff(ls(), "customers.df"))
+```
+
+Now we are going to take care of the factor variables, because often there are a lot of missing values hidden on those. So let's get all the levels for each factor variable.
+
+```{r}
+customers.df = droplevels.data.frame(customers.df)
+
+colsWithEmptyFactors.df = data.frame(colName = character(), index = integer(), naNumber = integer(),
+                                     stringsAsFactors = FALSE)
+
+for (i in 1:ncol(customers.df)) {
+    levels = levels(customers.df[, i])
+    if ("" %in% levels) {
+        colsWithEmptyFactors.df = rbind(colsWithEmptyFactors.df, data.frame(colName = names(customers.df)[i], index = i, naNumber = 0,
+                                                                            stringsAsFactors = FALSE))
+    }
+}
+
+```
+
+For each factor column we will numerate the number of missing values.
+
+```{r}
+
+for (i in 1:nrow(colsWithEmptyFactors.df)) {
+    index = colsWithEmptyFactors.df$index[i]
+    
+    level = levels(customers.df[, index])
+    level[which(level == "")] = NA
+    levels(customers.df[, index]) = level
+    
+    colsWithEmptyFactors.df[i, 3] = length(which(is.na(customers.df[, index]) == TRUE))
+}
+print(colsWithEmptyFactors.df)
+```
+
+Because all the factors except the area or prizm_social_one have too many NAs, then we will remove those columns.
+
+```{r}
+customers.df = customers.df[, -colsWithEmptyFactors.df$index[3:nrow(colsWithEmptyFactors.df)]]
+```
+
+Now, we will get all the rows with missing values.
+
+```{r}
+indexesEmptyRows = which(rowMeans(is.na(customers.df))!= 0)
+length(indexesEmptyRows)
+```
+
+Because the number is relatively small, we will delete those rows.
+
+```{r}
+customers.df = customers.df[-indexesEmptyRows,]
+
+print(length(which(is.na(customers.df) == TRUE)))
+```
+
+No there are no more NAs, and we are left with a pretty big data set to work on. And finally we look at the duplicated clients.
+
+```{r}
+length(which(duplicated(customers.df) == TRUE))
+```
+
+And there are non.
+
+## Feature Engineering
+
+After looking at the data, we have pretty much all the variables that we need to work one, but there are some steps we have to take care first:
+
+- Transform some numeric variables into factors because they are only 0 or 1.
+- Create a separate data set without the churn variable (variable to predict) that will be the one we work on.
+- Enumerate the rows of the data set with the Customers ID so we can identify each.
+- Remove unnecessary variables with a correlation matrix, and remove some that are also not important.
+
+```{r}
+REMOVE = "remove"
+TO_FACTOR = "toFactor"
+
+editColumn = function(colNames, df, toDo) {
+    for (col in colNames) {
+        index = which(names(df) == col)
+        
+        if (!is_empty(index)) {
+            if (toDo == REMOVE) {
+                df = df[, -index]
+            } else if (toDo == TO_FACTOR) {
+                df[, index] = as.factor(df[, index])
+            } else { errorCondition("Could not perform that action.")}
+        }
+    }
+    
+    return(df)
+}
+
+customers.df = editColumn(c("forgntvl", "truck", "rv"), customers.df, TO_FACTOR)
+
+customers.df = droplevels.data.frame(customers.df)
+
+row.names(customers.df) = customers.df$Customer_ID
+
+customers_original.df = customers.df
+
+customers.df = editColumn(c("churn", "Customer_ID"), customers.df, REMOVE)
+
+```
+
+After removing the predicted variables, and transforming into factors we will clean the environment.
+
+```{r}
+rm(list = setdiff(ls(), c("customers.df", "customers_original.df")))
+```
+
+## Understand the data
+
+Let's plot all the data set to look for outliers.
+
+```{r}
+boxplot(customers.df, las=2, col="darkblue")
+```
+
+We can see that there are some variables that are the same height as other, and also there are some outliers. So let's see if scaling the data helps.
+
+```{r}
+customers_numeric.df = select_if(customers.df, is.numeric)
+customers_not_numeric.df = select_if(customers.df, negate(is.numeric))
+
+boxplot(scale(customers_numeric.df), las=2, col="darkblue")
+```
+
+We can see a little bit of improvement, with less outliers. However, we are losing all the variance that the variables have, so let's see the correlation between them.
+
+```{r}
+R = cor(customers_numeric.df)
+
+ggcorr(customers_numeric.df, cor_matrix = R, label = TRUE)
+```
+
+Because of the immense amount of variables, it is only visible if the plot is zoomed. But we can see there are a lot of correlated variables so we will remove them (only one if two are strongly correlated). This makes sense because there are a lot of variables such as average monthly use over 3, 6, etc months.
+
+```{r}
+R[upper.tri(R)] = 0
+diag(R) = 0
+ 
+customers_numeric_no_corr.df =  customers_numeric.df[, !apply(R, 2, function(x) any(abs(x) > 0.9, na.rm = TRUE))]
+
+rm(R)
+```
+
+With this we can see that 22 variables were removed.
+
+## PCA
+
+First of all, lets compute the PCA scaled and not scaled to see if we can see any difference in the results.
+
+```{r}
+pca = prcomp(customers_numeric_no_corr.df)
+summary(pca)
+```
+
+In the PCA without the scaling we can see the first component describes the most variance of the model, up to 95%.
+
+```{r}
+fviz_screeplot(pca, addlabels = TRUE)
+```
+
+```{r}
+fviz_contrib(pca, choice = "var", axes = 1)
+```
+
+Without scaling now we clearly see that the only important variable is adjqty (adjusted total number of calls) and that is not ideal for a model, because with more than 48 variables just one cannot be the only important one.
+
+Now, let's do the PCA scaling the data.
+
+```{r}
+pca_scaled = prcomp(customers_numeric_no_corr.df, scale. = TRUE)
+summary(pca_scaled)
+```
+
+```{r}
+fviz_screeplot(pca_scaled, addlabels = TRUE)
+```
+
+```{r}
+fviz_contrib(pca_scaled, choice = "var", axes = 1)
+```
+
+We see that the scaled PCA is much more descriptive than the not scaled. In the non scaled PCA, adjqty (adjusted total number of calls) is the only important variable and there is only one principal component. Whereas in the scaled we have more principal components and more variables. It is true that using the scaled version removes the variance of the sample and also we lose a lot of explained variability of the model, but it is much more descriptive.
+
+Now, let's look at the other principal components.
+
+```{r}
+fviz_contrib(pca_scaled, choice = "var", axes = 2)
+```
+
+Here, there are less variables that contribute to the PC, but we can realize more or less the variables that are important.
+
+```{r}
+fviz_contrib(pca_scaled, choice = "var", axes = 3)
+```
+
+With the data scaled, we can see that the variance of the model due to the principal components is much more spread. And with the first 3, we can only explain about 50% of the variance of the model, but there are a lot more variables that are important. And we will use this variables to clustering the data into groups. Otherwise we will only be left with one variable and that is not accurate.
+
+```{r}
+rm(pca)
+```
+
+We will see if there are customers that highlight from others.
+
+```{r}
+head(get_pca_ind(pca_scaled)$contrib[,1], n = 20)
+```
+
+And there are not.
+
+Now, look at each specific customer to see the percentage of variance they contribute.
+
+```{r}
+head(sort(decreasing = TRUE, pca_scaled$x[,1]^2)/(pca_scaled$sdev[1]^2))/dim(customers_numeric.df)[1]
+```
+
+```{r}
+fviz_contrib(pca_scaled, choice = "ind", axes = 1)
+```
+
+If we do not pay attention to the customers id, we can see that there are some really important customers that explain the most of the variance. However, as we assume that all customers are the same, we cannot know exactly what this means. However maybe if we compare that to the churn variable we can conclude that those are the ones quitting.
+
+What about the top customers?
+
+```{r}
+fviz_contrib(pca_scaled, choice = "ind", axes = 1, top=200)
+```
+
+Here we can tell that the customer contribution variation is like an inverse exponential without that steep slope. That is there are some clients that stand out, but not that many. There are some differences between the customers but not a huge one.
+
+```{r warning=FALSE}
+customers_numeric_no_corr.df[order(get_pca_ind(pca_scaled)$contrib[,1], decreasing = TRUE)[1:20], ]
+```
+
+If we look at the characteristics of each top customer, we do not really see any relationship except for the two most variables adjqty (adjusted total number of calls) and adjrev (adjusted total revenues). and those customers are the ones with the highest ones.
+
+```{r}
+fviz_pca_var(pca_scaled, col.var = "contrib")
+```
+
+Here we can clearly see that there are strong correlation between some variables and that we can possibly sort the clients by this columns.
+
+```{r}
+fviz_pca_biplot(pca_scaled, repel = TRUE)
+```
+
+Here we confirm that there are differences. The variables that are to the right correspond to the most important variables of the first PC, and the ones that are on the top to the second one. 
+
+Let's see the customers by the first and the second component.
+
+```{r}
+fviz_pca_ind(pca_scaled,
+             label = "none", # hide individual labels
+             habillage = customers_original.df$churn, # color by groups
+             palette = c("#00AFBB", "#E7B800"))
+```
+
+Here it is not clear in this two PCA to differentiate the churn groups. However the overlap can be because it is in dimension 2 and the points live in dimension 100. Now we will use factor analysis and compare the results. Let's see if we can divide the customers and also if the results are similar to the PCA.
+
+## Factor Analysis
+
+```{r}
+# gives error because the data is too large
+# x.f = factanal(customers_numeric_no_corr.df, factors = 5, rotation="none", scores="regression")
+
+colsImportant = c()
+
+colsImportant = c(colsImportant, names(sort(pca_scaled$rotation[, 1], decreasing = TRUE)[1:21]))
+colsImportant = c(colsImportant, names(sort(pca_scaled$rotation[, 2], decreasing = TRUE)[1:8]))
+colsImportant = c(colsImportant, names(sort(pca_scaled$rotation[, 1], decreasing = TRUE)[1:5]))
+
+colsImportant = unique(colsImportant)
+```
+
+As the variables are too big for the factor analysis, we will reduce it. We use PCA with the most imporant variables of the PCs to reduce it. We use the ones that are high enough, given by the graphs above.
+
+```{r}
+colsNotImportant = setdiff(names(customers_numeric_no_corr.df), colsImportant)
+    
+customers_numeric_no_corr_small.df = customers_numeric_no_corr.df
+
+for (i in colsNotImportant) {
+    index = which(names(customers_numeric_no_corr_small.df) == i)
+    
+    if (length(index) != 0) {
+        customers_numeric_no_corr_small.df = customers_numeric_no_corr_small.df[, -index]
+    }
+}
+```
+
+After removeing the not so important variables we do the Factor Analysis.
+
+```{r}
+x.f = factanal(scale(customers_numeric_no_corr_small.df), factors = 5, rotation="none", scores="regression")
+
+cbind(x.f$loadings, x.f$uniquenesses)
+```
+
+This is good but let's graph each factor and see if we can deduce some things.
+
+
+```{r}
+par(mfrow=c(3,1))
+barplot(x.f$loadings[,1], names=F, las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,2], names=F, las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,3], names=F, las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,4], names=F, las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,5], las=2, col="darkblue", ylim = c(-1, 1))
+```
+
+In the graph, at first sight we can discard the 4, 5 factors as they are not pretty much meaningful in any manner. Also the factor 3 does not look like anything that important.
+
+However, factors 1 and 2 show really interesting inverse correlations. They differ on the exact variables and show that the characteristics of the two type of customers are opposite. They are the contrary, this could mean that ones are the ones with churn = 1 (left the company) and the others the ones that stay. Also, looking at the data and the variables, the first factor can be the customers that remain in the company, and the second factor the ones that leave the company.
+
+This means that the first factors can contribute to the churn variable to be negative, and the opposite for the second factor.
+    
+```{r}
+par(mfrow=c(3,1))
+barplot(x.f$loadings[,1], names=F, las=2, col="darkblue", ylim = c(-1, 1))
+barplot(x.f$loadings[,2], las=2, col="darkblue", ylim = c(-1, 1))
+```
+
+```{r}
+rm(list = c("colsImportant", "colsNotImportant", "i", "index")) # clean the environment.
+```
+
+## Clustering
+
+Let's see if now with our previous hypothesis we can group the customers in the ones that left and the ones that did not leave.
+
+First of all, let's see whats is the optimal number of clusters. However, our data is too large to test it, so we are gonna do a simple sample with cross validation to see the optimal value.
+
+```{r}
+nFolds = 6
+folds = sample(rep(1:nFolds, length.out = nrow(customers_numeric_no_corr_small.df)))
+```
+
+```{r}
+X = as.data.frame(scale(customers_numeric_no_corr_small.df))[which(folds == 1), ]
+#print(fviz_nbclust(X, kmeans, method = 'wss'))
+
+X = as.data.frame(scale(customers_numeric_no_corr_small.df))[which(folds == 3), ]
+#print(fviz_nbclust(X, kmeans, method = 'wss'))
+
+X = as.data.frame(scale(customers_numeric_no_corr_small.df))[which(folds == 6), ]
+#print(fviz_nbclust(X, kmeans, method = 'wss'))
+```
+
+We just print a couple of graphs because otherwise the pc cannot handle it. After looking at each portion of the data set, it looks like they are fairly similar and that the optimal number of cluster could be around 3,4 or 5. This graph means that the minimum distance from the cluster are when they are 3 to 5.
+
+Now, let's try to see what is the optimal number of clusters looking at the silhouette distance, that is the average width of the silhouette graph.
+
+```{r warning=FALSE}
+for (i in 1:nFolds) {
+    X = as.data.frame(scale(customers_numeric_no_corr_small.df))[which(folds == i), ]
+
+    print(fviz_nbclust(X, kmeans, method = 'silhouette'))
+}
+```
+
+Here, the graph indicates that mostly 3 clusters is the base clustering that we can make. And finally we will use a simple bostrapping to really know the best. However, as bostrapping is really computationally expensive, we will do it for just one fold.
+
+```{r warning=FALSE}
+X = as.data.frame(scale(customers_numeric_no_corr_small.df))[which(folds == 1), ]
+
+fviz_nbclust(X, kmeans, method = 'gap_stat', k.max = 8)
+```
+
+And after a while, in the graph we can see that the best number is 3 to 4.
+
+If we group all the conclusions we know that the best number of clusters is 3, so that is what we are going to use. Also we are going to scale all the data as we explained earlier to get more variate readings.
+
+Let's start with a normal kmeans and se the clusters that it makes.
+
+```{r}
+X = as.data.frame(scale(customers_numeric_no_corr_small.df))
+
+fit = kmeans(X, centers=3, nstart=100)
+groups = fit$cluster
+```
+
+Now, we will graph the number of ocurrencies for each group. 
+
+```{r}
+barplot(table(groups), col="blue")
+```
+
+Here we see that there is a group with most of the customers, and other not so big. However, the third group is almost ineligible. The hypothesis could be as the one we had before. One group can correspond to customers that left the company and other to the ones that remain. First, we will develop this cluster further, and then let's see if we can get the same hypothesis with other clustering methods.
+
+
+```{r message=FALSE, warning=FALSE}
+centers = fit$centers
+
+for (i in 1:3) {
+    bar1=barplot(centers[i,], las=2, col="darkblue", ylim=c(-2,100), main=paste("Cluster", i,": Group center in blue, global center in red"))
+    print(points(bar1,y=apply(X, 2, quantile, 0.50),col="red",pch=19))
+}
+```
+
+Here, we can clearly see that the group with less values, is like a mix cluster. The first cluster has much more higher values that the second cluster, and this can mean that the customers from the first group are more radical and therefore have more probabilty to leave the company.
+
+What about plotting the clusters?
+
+```{r}
+fviz_cluster(fit, data = X, geom = c("point"),ellipse.type = 'norm', pointsize=1)+
+  theme_minimal()+scale_fill_brewer(palette="Paired")
+```
+
+Here we can see some minor differences and see that the most populated cluster (cluster 2) is at the left foremost part, followed by the first cluster and finally the last. This shows that number 3 are the most extreme customers and 2 the most common.
+
+What about two clusters?
+
+```{r}
+fit2 = kmeans(customers_numeric_no_corr_small.df, centers=2, nstart=100)
+groups2 = fit2$cluster
+```
+
+```{r}
+barplot(table(groups2), col="blue")
+```
+
+```{r message=FALSE, warning=FALSE}
+centers2 = fit2$centers
+
+for (i in 1:2) {
+    bar1=barplot(centers2[i,], las=2, col="darkblue", ylim=c(-2,100), main=paste("Cluster", i,": Group center in blue, global center in red"))
+    print(points(bar1,y=apply(X, 2, quantile, 0.50),col="red",pch=19))
+}
+```
+
+With two clusters we can see the same as the previous test but only the two most populated clusters. That is why we are going to use 3 clusters as it is more precise.
+
+```{r}
+fviz_cluster(fit2, data = X, geom = c("point"),ellipse.type = 'norm', pointsize=1)+
+  theme_minimal()+scale_fill_brewer(palette="Paired")
+```
+
+Just the same so we will delete it.
+
+```{r}
+rm(list = c("fit2", "groups2"))
+```
+
+```{r}
+#fit.kmeans <- eclust(X, "kmeans", stand=TRUE, k=3)
+#fviz_silhouette(fit.kmeans)
+```
+
+Because the data set is too large, we cannot compute the silhouette distance. But we will use adujustedRandIndex to verify if we get similar results with other clustering.
+
+### Mahalanobis distance K-Means
+
+```{r}
+S_x = cov(X)
+iS = solve(S_x)
+e = eigen(iS)
+V = e$vectors
+B = V %*% diag(sqrt(e$values)) %*% t(V)
+Xtil = scale(X,scale = FALSE)
+X_maha = as.data.frame(Xtil %*% B)
+```
+
+Here we get the mahalanobis distance instead of the euclidean.
+
+```{r warning=FALSE}
+fit.mahalanobis = kmeans(X_maha, centers=3, nstart=100)
+
+groups = fit.mahalanobis$cluster
+centers=fit.mahalanobis$centers
+
+colnames(centers)=colnames(X)
+centers
+```
+
+After doing the mahalanobis distance kmeans, let's look at the distribution of the clusters.
+
+```{r}
+barplot(table(groups), col="blue")
+```
+
+So looks like they are the same! The only thing that changes is the reference number of the clusters but that does not really matter.
+
+Let's see if the clusters centers are similar to the euclidian distance kmeans.
+
+```{r}
+for (i in 1:3) {
+    bar1=barplot(centers[i,], las=2, col="darkblue", ylim=c(-2,2), main=paste("Cluster", i,": Group center in blue, global center in red"))
+    points(bar1,y=apply(X, 2, quantile, 0.50),col="red",pch=19)
+}
+```
+
+Here, it shows that they are not really the same. It is a little bit weird because the cluster that did not matter has a lot of outlier variables , whereas the most populated cluster is almost 0. Let's do a little bit more research and see what it is going on.
+
+```{r}
+fviz_cluster(fit.mahalanobis, data = X, geom = c("point"),ellipse.type = 'norm', pointsize=1)+
+  theme_minimal()+scale_fill_brewer(palette="Paired")
+```
+
+Here we can conclude that the most populated clusters remian the same, however cluster number one is not the extreme one, it is like the outlier variables.
+
+```{r}
+adjustedRandIndex(fit$cluster, fit.mahalanobis$cluster) 
+```
+
+Here we see that they are not really that similar (<<1) but this could be because of the least populated cluster. In the end, I think that the mahalanobis cluster is more accurate as it divides de data in to and also the outliers. We will try PAM now and see if this hypothesis is supported.
+
+### PAM
+
+Partitioning (clustering)  of the data into k clusters around medoids.
+
+```{r}
+# fit.pam = eclust(X, "pam", stand=TRUE, k=3, graph=F)
+# ERROR pam only allows mas of 65536
+```
+
+PAM cannot handle a lot of data and that is why I have removed half of the rows. However, we can take in mind that the results in PAM will not be as accurate because we are using a sample, half of what we usually have. It is true that I picked random samples so it can be more or less accurate, but we have to take it in mind. Also we will remove some variables because otherwise it crashes.
+
+```{r}
+colsImportant = c()
+
+colsImportant = c(colsImportant, names(sort(pca_scaled$rotation[, 1], decreasing = TRUE)[1:10]))
+colsImportant = c(colsImportant, names(sort(pca_scaled$rotation[, 2], decreasing = TRUE)[1:4]))
+colsImportant = c(colsImportant, names(sort(pca_scaled$rotation[, 1], decreasing = TRUE)[1:3]))
+
+colsImportant = unique(colsImportant)
+```
+
+As the variables are too big for the factor analysis, we will reduce it. We use PCA with the most imporant variables of the PCs to reduce it. We use the ones that are high enough, given by the graphs above.
+
+```{r}
+colsNotImportant = setdiff(names(X), colsImportant)
+    
+X = scale(customers_numeric_no_corr_small.df)
+
+for (i in colsNotImportant) {
+    index = which(names(X) == i)
+    
+    if (length(index) != 0) {
+        X = X[, -index]
+    }
+}
+
+nFolds = 3
+folds = sample(rep(1:nFolds, length.out = nrow(X)))
+
+X = as.data.frame(X[which((folds == 1)), ])
+```
+
+
+```{r}
+#fit.pam = eclust(X, "pam", k=3, graph=F)
+```
+
+```{r}
+#fviz_cluster(fit.pam, data = X, geom = c("point"), pointsize=1)+ theme_minimal()+geom_text(label=names,hjust=0, vjust=0,size=2,check_overlap = F)+scale_fill_brewer(palette="Paired")
+```
+
+```{r}
+#adjustedRandIndex(fit$cluster, fit.pam$clustering) 
+```
+
+Even if we try to reduce the data set is does not work. It looks like PAM cannot be performed on this big data set, therefore we do not do it. Also we will keep using the super small data set for the others, because otherwise R breaks when we try to perform the other classifications.
+
+### Kernel K-Means
+
+Let's start with the Gaussian kernel kmeans.
+
+```{r}
+#fit.ker = kkmeans(as.matrix(X), centers=3, kernel="rbfdot") # Radial Basis kernel (Gaussian)
+```
+
+```{r}
+#object.ker = list(data = X, cluster = fit.ker@.Data)
+
+#fviz_cluster(object.ker, geom = c("point"), ellipse=F,pointsize=1)
+```
+
+```{r}
+#adjustedRandIndex(fit$cluster, fit.ker$cluster) 
+```
+
+The same as PAM, Kernel Kmeans looks like cannot be performed in this data set. We could try further reduce the data set, but it will be useless compared to the original data set because our conclusion will be too far out the original ones and most probably not correct.
+
+### Hierarchical Clustering
+
+What about hierarchical clustering? Is is similar to the normal kmeas that we perform at the beginning?
+(All the Hierarchical Cluster is commented because it was breaking R whenever I tried to perform the html.)
+
+```{r}
+#d = dist(scale(X), method = "euclidean")
+#hc = hclust(d, method = "average")
+```
+
+```{r}
+#hc$labels = names
+
+#plot(hc)
+```
+
+Here everything is a mess and we cannot differentiate anything. Let's try using ggplot and see if we can draw some conclusions.
+
+```{r}
+# fviz_dend(x = hc, k = 3,color_labels_by_k = TRUE,cex = 0.8,type = "phylogenic",repel = TRUE)+theme(axis.text.x=element_blank(),axis.text.y=element_blank())
+```
+
+After more than 4 hours waiting, nothing showed so we decided to not to do the dendogram. This is because it is really constitutionally expensive for a data set for so many entries. Moreover, the dendogram would not be that useful as there should be only two types of customers and all in the same level.
+
+```{r}
+#groups.hc = cutree(hc, k = 3)
+
+#fit.small = kmeans(X, centers=3, nstart=100)
+```
+
+We get a kmeans with the small data set.
+
+```{r}
+#adjustedRandIndex(fit.small$cluster, groups.hc)
+```
+
+Even though using almost the same data set, they do not look anything similar. This could be because we are using a small data set, but mainly is because a dendogram is not the best idea for classification for our data. (It gives -0.552e-5)
+
+### EM Clustering
+
+Finally let's try the Expectation-Maximization clustering. This is based in kmeans but uses probabilities for clusters to assign a customer for each cluster. The goal is to maximize the likelihood of the data, where each customer as a certain probability to fall inside each cluster.
+
+```{r}
+#res.Mclust <- Mclust(scale(X))
+#summary(res.Mclust)
+```
+
+
+```{r}
+#head(res.Mclust$classification)
+```
+
+```{r}
+#fviz_mclust(object = res.Mclust, what = "BIC", pallete = "jco") + scale_x_discrete(limits = c(1:10))
+```
+
+The EM Clustering does not work with this data as it is too big. It happens the same as with PAM. Therefore no clusterplot can be done neither.
+
+```{r}
+#fviz_mclust(object = res.Mclust, what = "classification", geom = "point",  pallete = "jco")
+```
+
+```{r}
+#adjustedRandIndex(fit$clusters, res.Mclust$classification) 
+```
+
+### Clustering Final
+
+In the end, after trying all the possible clusters we finally decided that the normal kmeans with the mahalanobis distance as it is the best one that sorts the population. This is because as it is a simple model, it can be performed in really big data sets (such as this ones) whereas other more complex kmeans cannot (as explained earlier). We could also choose the euclidean distance kmeans but the mahalanobis sorts better the data as explain previously. 
+
+## Conclusion
+
+In the end, we have clearly seen that everything that we did correlated with two groups.
+
+PCA gave us the conclusion that there were some variables strongly related with the output and seen those. Moreover, based on those variables we saw that the most important variables in on PC were characteristic of those who do not tend to leave the company and the opposite for the other PC.
+
+For the Factor Analysis, we saw that there were only two really important factors as the PCA showed as. And also we could find two latent variables that were strongly correlated to the churn variable.
+
+Finally, for the clustering part, the only clusters that worked where the simple ones. However, they really sorted the data pretty well, especially the mahalanobis distance kmeans that sorted the data in two really clear cluster and another with all the outliers for the second PC.
+
+To sum up, we could see which were the variables most imporant for each group and then we could predict if a customer will leave the company depending on those. But for that, it is better to use some supervised learning tools.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
