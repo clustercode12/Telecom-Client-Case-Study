@@ -19,7 +19,7 @@ Our main goal is to see if the churn variable (variable that characterizes the c
 ```{r include=FALSE, results='hide'}
 # Setup the environment and load all the libraries
 
-workingDirectory = "/home/me/MEGA/Uni/2 YEAR/Q1/Stat. Learning/HW/1"
+workingDirectory = ""
 setwd(workingDirectory)
 
 loadLibraries = function(libraries) {
